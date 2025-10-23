@@ -429,7 +429,10 @@ def chat():
     user_message = data.get('user_message')
     chat_history = data.get('chat_history', [])  # Full conversation history
     
+    app.logger.info(f"CHAT REQUEST: session_id={session_id}, message={user_message[:50] if user_message else 'None'}...")
+    
     if session_id not in participant_sessions:
+        app.logger.error(f"Invalid session: {session_id}. Active sessions: {list(participant_sessions.keys())}")
         return jsonify({'error': 'Invalid session'}), 400
     
     session = participant_sessions[session_id]
