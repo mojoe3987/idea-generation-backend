@@ -589,6 +589,37 @@ def export_condition_data():
     
     return jsonify(data)
 
+@app.route('/api/reset_all_data', methods=['POST'])
+def reset_all_data():
+    """Reset all condition data (for testing/experiment start)"""
+    try:
+        with state_lock:
+            # Reset all conditions
+            for condition in condition_states:
+                condition_states[condition] = {
+                    'ideas': [],
+                    'summary': None,
+                    'last_summary_update': 0
+                }
+            
+            # Clear participant sessions
+            participant_sessions.clear()
+            
+            # Clear embedding cache
+            embedding_cache.clear()
+        
+        app.logger.info("All data reset - experiment ready to start")
+        
+        return jsonify({
+            'status': 'success',
+            'message': 'All condition data and sessions have been reset',
+            'timestamp': datetime.now().isoformat()
+        })
+        
+    except Exception as e:
+        app.logger.error(f"Error resetting data: {e}")
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/health', methods=['GET'])
 def health_check():
     """Health check endpoint"""
