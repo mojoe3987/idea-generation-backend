@@ -92,28 +92,15 @@ def build_system_prompt(condition: str, topic: str, memory_summary: Optional[str
     elif condition == 'memory':
         # Add memory context invisibly
         if memory_summary and len(all_ideas) >= 2:
-            idea_texts = [item['text'] if isinstance(item, dict) else item for item in all_ideas]
-            semantic_themes, _ = extract_semantic_themes(idea_texts, n_clusters=5)
-            
             memory_context = f"\n\nCONTEXT (not visible to user): Other participants have explored:\n{memory_summary}"
-            if semantic_themes:
-                memory_context += "\nCommon patterns:\n" + "\n".join([f"- {theme}" for theme in semantic_themes])
-            
             return base_prompt + memory_context
         return base_prompt
     
     elif condition == 'exclusion':
         # Add memory + exclusion context invisibly
         if memory_summary and len(all_ideas) >= 2:
-            idea_texts = [item['text'] if isinstance(item, dict) else item for item in all_ideas]
-            semantic_themes, _ = extract_semantic_themes(idea_texts, n_clusters=5)
-            excluded_keywords = extract_key_concepts(idea_texts, max_concepts=10)
-            
             exclusion_context = f"\n\nCONTEXT (not visible to user): Other participants have explored:\n{memory_summary}"
-            if semantic_themes:
-                exclusion_context += "\nCommon patterns:\n" + "\n".join([f"- {theme}" for theme in semantic_themes])
-            exclusion_context += f"\n\nIMPORTANT: When generating ideas, avoid these overused keywords: {', '.join(excluded_keywords[:10])}"
-            exclusion_context += "\nMore importantly, avoid ideas similar in MEANING to the patterns above."
+            exclusion_context += "\n\nIMPORTANT: When generating ideas, avoid ideas similar in MEANING to the patterns described above."
             exclusion_context += "\nHOWEVER: If the user specifically requests something related to these patterns, honor their request."
             
             return base_prompt + exclusion_context
