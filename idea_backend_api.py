@@ -131,7 +131,7 @@ User's request:
     response = openai_client.chat.completions.create(
         model=CONFIG['model_name'],
         messages=[
-            {"role": "system", "content": "You are a creative idea generator. When providing an actual design idea, always start with 'Here is an idea:' followed by the idea. For casual conversation, respond normally without the prefix. Describe ideas directly. Do not use imperative verbs like 'Create', 'Design', or 'Introduce'. Keep responses to 2-3 sentences."},
+            {"role": "system", "content": "You are a creative idea generator. Describe ideas directly. Do not use imperative verbs like 'Create', 'Design', or 'Introduce'. Keep responses to 2-3 sentences."},
             {"role": "user", "content": prompt}
         ],
         temperature=CONFIG['temperature'],
@@ -166,7 +166,7 @@ User's request:
     response = openai_client.chat.completions.create(
         model=CONFIG['model_name'],
         messages=[
-            {"role": "system", "content": "You are a creative idea generator. When providing an actual design idea, always start with 'Here is an idea:' followed by the idea. For casual conversation, respond normally without the prefix. Describe ideas directly. Do not use imperative verbs like 'Create', 'Design', or 'Introduce'. Keep responses to 2-3 sentences."},
+            {"role": "system", "content": "You are a creative idea generator. Describe ideas directly. Do not use imperative verbs like 'Create', 'Design', or 'Introduce'. Keep responses to 2-3 sentences."},
             {"role": "user", "content": prompt}
         ],
         temperature=CONFIG['temperature'],
@@ -209,7 +209,7 @@ However, honor the user's request above, even if it relates to these. Be specifi
     response = openai_client.chat.completions.create(
         model=CONFIG['model_name'],
         messages=[
-            {"role": "system", "content": "You are a creative idea generator. When providing an actual design idea, always start with 'Here is an idea:' followed by the idea. For casual conversation, respond normally without the prefix. Describe ideas directly. Do not use imperative verbs like 'Create', 'Design', or 'Introduce'. Keep responses to 2-3 sentences. You avoid repeating what others have done, but always honor specific user requests."},
+            {"role": "system", "content": "You are a creative idea generator. Describe ideas directly. Do not use imperative verbs like 'Create', 'Design', or 'Introduce'. Keep responses to 2-3 sentences. You avoid repeating what others have done, but always honor specific user requests."},
             {"role": "user", "content": prompt}
         ],
         temperature=CONFIG['temperature'],
@@ -399,7 +399,6 @@ def start_session():
         'participant_id': participant_id,
         'condition': condition,
         'topic': topic,
-        'ideas_generated': 0,
         'created_at': datetime.now().isoformat()
     }
     
@@ -469,52 +468,11 @@ def chat():
         
         assistant_response = response.choices[0].message.content.strip()
         
-        # Detect if this response contains an actual idea (look for "Here is an idea:" prefix)
-        try:
-            is_idea = assistant_response.strip().startswith("Here is an idea:")
-            app.logger.info(f"Idea detection: {is_idea} (starts with 'Here is an idea:': {assistant_response.strip().startswith('Here is an idea:')})")
-        except Exception as e:
-            app.logger.error(f"Error in idea detection: {e}")
-            is_idea = False
-        
-        # If this is an actual idea, add to SHARED state
-        if is_idea:
-            try:
-                with state_lock:
-                    state['ideas'].append({
-                        'text': assistant_response,
-                        'participant_id': session['participant_id'],
-                        'timestamp': datetime.now().isoformat(),
-                        'user_request': user_message
-                    })
-                    
-                    total_ideas = len(state['ideas'])
-                    session['ideas_generated'] += 1
-                    
-                    # Update summary every batch_size ideas (across ALL participants)
-                    summary_updated = False
-                    if condition in ['memory', 'exclusion'] and total_ideas % CONFIG['batch_size'] == 0:
-                        try:
-                            batch_start = max(0, total_ideas - CONFIG['batch_size'])
-                            batch_ideas = [item['text'] for item in state['ideas'][batch_start:]]
-                            state['summary'] = generate_summary(batch_ideas, state['summary'])
-                            state['last_summary_update'] = total_ideas
-                            summary_updated = True
-                            app.logger.info(f"Summary updated for {condition} condition")
-                        except Exception as e:
-                            app.logger.error(f"Error updating summary: {e}")
-                
-                # Log idea generation
-                app.logger.info(f"IDEA GENERATED: {condition.upper()} condition - Participant {session['participant_id'][:8]}... (#{session['ideas_generated']}, total in condition: {total_ideas}){' [SUMMARY UPDATED]' if summary_updated else ''}")
-            except Exception as e:
-                app.logger.error(f"Error adding idea to state: {e}")
-                is_idea = False
+        # Log conversation interaction
+        app.logger.info(f"CHAT: {condition.upper()} condition - Participant {session['participant_id'][:8]}... sent message, received response")
         
         return jsonify({
             'response': assistant_response,
-            'is_idea': is_idea,
-            'participant_idea_number': session['ideas_generated'] if is_idea else None,
-            'total_ideas_in_condition': len(state['ideas']) if is_idea else None,
             'session_id': session_id,
             'status': 'success'
         })
@@ -550,7 +508,7 @@ def end_session():
     session = participant_sessions[session_id]
     
     # Log session end
-    app.logger.info(f"SESSION ENDED: {session['condition'].upper()} - Participant {session['participant_id'][:8]}... generated {session['ideas_generated']} ideas")
+    app.logger.info(f"SESSION ENDED: {session['condition'].upper()} - Participant {session['participant_id'][:8]}...")
     
     # Save participant data
     filename = f"participant_{session['participant_id']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
@@ -560,8 +518,7 @@ def end_session():
         json.dump(session, f, indent=2)
     
     return jsonify({
-        'status': 'success',
-        'ideas_generated': session['ideas_generated']
+        'status': 'success'
     })
 
 @app.route('/api/export_condition_data', methods=['GET'])
