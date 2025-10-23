@@ -433,7 +433,7 @@ def chat():
     
     if session_id not in participant_sessions:
         app.logger.error(f"Invalid session: {session_id}. Active sessions: {list(participant_sessions.keys())}")
-        return jsonify({'error': 'Invalid session'}), 400
+        return jsonify({'error': 'Session expired. Please refresh the page to start a new session.'}), 400
     
     session = participant_sessions[session_id]
     condition = session['condition']
