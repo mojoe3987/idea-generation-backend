@@ -70,6 +70,7 @@ participant_sessions = {}
 # Embedding cache - stores computed embeddings by text hash
 # This provides identical results but much faster for repeated/similar ideas
 embedding_cache = {}
+MAX_CACHE_SIZE = 1000  # Limit cache to prevent memory issues
 
 # Lock for thread-safe updates
 state_lock = threading.Lock()
@@ -267,6 +268,14 @@ def get_embeddings(texts: List[str]) -> np.ndarray:
                     text_hash = hashlib.md5(text.encode()).hexdigest()
                     embedding_cache[text_hash] = item.embedding
                     embeddings[indices_to_fetch[global_idx]] = item.embedding
+                
+                # Limit cache size to prevent memory issues
+                if len(embedding_cache) > MAX_CACHE_SIZE:
+                    # Remove oldest entries (simple FIFO)
+                    keys_to_remove = list(embedding_cache.keys())[:len(embedding_cache) - MAX_CACHE_SIZE + 100]
+                    for key in keys_to_remove:
+                        del embedding_cache[key]
+                    app.logger.info(f"Cache size limited to {MAX_CACHE_SIZE}, removed {len(keys_to_remove)} entries")
                 
             app.logger.info(f"Cached {len(texts_to_fetch)} new embeddings (cache size: {len(embedding_cache)})")
         except Exception as e:
@@ -472,32 +481,45 @@ def chat():
         assistant_response = response.choices[0].message.content.strip()
         
         # Detect if this response contains an actual idea (heuristic: longer response mentioning design elements)
-        is_idea = len(assistant_response.split()) > 15 and any(word in assistant_response.lower() for word in ['table', 'design', 'feature', 'dining', 'modular', 'wood', 'metal', 'glass'])
+        try:
+            is_idea = len(assistant_response.split()) > 15 and any(word in assistant_response.lower() for word in ['table', 'design', 'feature', 'dining', 'modular', 'wood', 'metal', 'glass'])
+            app.logger.info(f"Idea detection: {is_idea} (length: {len(assistant_response.split())})")
+        except Exception as e:
+            app.logger.error(f"Error in idea detection: {e}")
+            is_idea = False
         
         # If this is an actual idea, add to SHARED state
         if is_idea:
-            with state_lock:
-                state['ideas'].append({
-                    'text': assistant_response,
-                    'participant_id': session['participant_id'],
-                    'timestamp': datetime.now().isoformat(),
-                    'user_request': user_message
-                })
+            try:
+                with state_lock:
+                    state['ideas'].append({
+                        'text': assistant_response,
+                        'participant_id': session['participant_id'],
+                        'timestamp': datetime.now().isoformat(),
+                        'user_request': user_message
+                    })
+                    
+                    total_ideas = len(state['ideas'])
+                    session['ideas_generated'] += 1
+                    
+                    # Update summary every batch_size ideas (across ALL participants)
+                    summary_updated = False
+                    if condition in ['memory', 'exclusion'] and total_ideas % CONFIG['batch_size'] == 0:
+                        try:
+                            batch_start = max(0, total_ideas - CONFIG['batch_size'])
+                            batch_ideas = [item['text'] for item in state['ideas'][batch_start:]]
+                            state['summary'] = generate_summary(batch_ideas, state['summary'])
+                            state['last_summary_update'] = total_ideas
+                            summary_updated = True
+                            app.logger.info(f"Summary updated for {condition} condition")
+                        except Exception as e:
+                            app.logger.error(f"Error updating summary: {e}")
                 
-                total_ideas = len(state['ideas'])
-                session['ideas_generated'] += 1
-                
-                # Update summary every batch_size ideas (across ALL participants)
-                summary_updated = False
-                if condition in ['memory', 'exclusion'] and total_ideas % CONFIG['batch_size'] == 0:
-                    batch_start = max(0, total_ideas - CONFIG['batch_size'])
-                    batch_ideas = [item['text'] for item in state['ideas'][batch_start:]]
-                    state['summary'] = generate_summary(batch_ideas, state['summary'])
-                    state['last_summary_update'] = total_ideas
-                    summary_updated = True
-            
-            # Log idea generation
-            app.logger.info(f"IDEA GENERATED: {condition.upper()} condition - Participant {session['participant_id'][:8]}... (#{session['ideas_generated']}, total in condition: {total_ideas}){' [SUMMARY UPDATED]' if summary_updated else ''}")
+                # Log idea generation
+                app.logger.info(f"IDEA GENERATED: {condition.upper()} condition - Participant {session['participant_id'][:8]}... (#{session['ideas_generated']}, total in condition: {total_ideas}){' [SUMMARY UPDATED]' if summary_updated else ''}")
+            except Exception as e:
+                app.logger.error(f"Error adding idea to state: {e}")
+                is_idea = False
         
         return jsonify({
             'response': assistant_response,
