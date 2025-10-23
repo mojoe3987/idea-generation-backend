@@ -82,7 +82,7 @@ def build_system_prompt(condition: str, topic: str, memory_summary: Optional[str
 
 - Respond naturally and conversationally
 - When the user asks for an idea or makes a request, provide ONE specific idea in 2-3 sentences
-- Describe ideas directly (e.g., "A dining table that..." or "This design features...")
+- Describe ideas directly
 - Do not use imperative verbs like "Create", "Design", or "Introduce"
 - If the user greets you or chats, respond warmly and guide them towards idea generation"""
     
@@ -131,7 +131,7 @@ User's request:
     response = openai_client.chat.completions.create(
         model=CONFIG['model_name'],
         messages=[
-            {"role": "system", "content": "You are a creative idea generator. Describe ideas directly using phrases like 'A dining table that...' or 'This design features...'. Do not use imperative verbs like 'Create', 'Design', or 'Introduce'. Keep responses to 2-3 sentences."},
+            {"role": "system", "content": "You are a creative idea generator. When providing an actual design idea, always start with 'Here is an idea:' followed by the idea. For casual conversation, respond normally without the prefix. Describe ideas directly. Do not use imperative verbs like 'Create', 'Design', or 'Introduce'. Keep responses to 2-3 sentences."},
             {"role": "user", "content": prompt}
         ],
         temperature=CONFIG['temperature'],
@@ -166,7 +166,7 @@ User's request:
     response = openai_client.chat.completions.create(
         model=CONFIG['model_name'],
         messages=[
-            {"role": "system", "content": "You are a creative idea generator. Describe ideas directly using phrases like 'A dining table that...' or 'This design features...'. Do not use imperative verbs like 'Create', 'Design', or 'Introduce'. Keep responses to 2-3 sentences."},
+            {"role": "system", "content": "You are a creative idea generator. When providing an actual design idea, always start with 'Here is an idea:' followed by the idea. For casual conversation, respond normally without the prefix. Describe ideas directly. Do not use imperative verbs like 'Create', 'Design', or 'Introduce'. Keep responses to 2-3 sentences."},
             {"role": "user", "content": prompt}
         ],
         temperature=CONFIG['temperature'],
@@ -194,9 +194,8 @@ def generate_idea_with_exclusion(topic: str, memory_context: str, all_ideas: Lis
     # Format keywords (what WORDS are overused)
     keywords_text = ", ".join(excluded_keywords[:10]) if excluded_keywords else ""
     
-    if user_request:
-        # User provided specific direction - honor it even if it overlaps with exclusions
-        prompt = f"""Generate a creative solution for {topic}. Keep it concise (2-3 sentences).
+    # User always provides specific direction - honor it even if it overlaps with exclusions
+    prompt = f"""Generate a creative solution for {topic}. Keep it concise (2-3 sentences).
 
 Previous explorations by other participants:
 {memory_context}{semantic_exclusion}
@@ -206,21 +205,11 @@ User's specific request:
 
 Note: Overused keywords include: {keywords_text}
 However, honor the user's request above, even if it relates to these. Be specific and concrete."""
-    else:
-        # Standard exclusion mode with semantic awareness
-        prompt = f"""Generate a creative solution for {topic}. Keep it concise (2-3 sentences). Be specific and concrete.
-
-Previous explorations summary:
-{memory_context}{semantic_exclusion}
-
-IMPORTANT - Avoid these overused keywords: {keywords_text}
-
-More importantly, avoid generating ideas similar in MEANING to the common patterns listed above. Think of a conceptually different approach."""
 
     response = openai_client.chat.completions.create(
         model=CONFIG['model_name'],
         messages=[
-            {"role": "system", "content": "You are a creative idea generator. Describe ideas directly using phrases like 'A dining table that...' or 'This design features...'. Do not use imperative verbs like 'Create', 'Design', or 'Introduce'. Keep responses to 2-3 sentences. You avoid repeating what others have done, but always honor specific user requests."},
+            {"role": "system", "content": "You are a creative idea generator. When providing an actual design idea, always start with 'Here is an idea:' followed by the idea. For casual conversation, respond normally without the prefix. Describe ideas directly. Do not use imperative verbs like 'Create', 'Design', or 'Introduce'. Keep responses to 2-3 sentences. You avoid repeating what others have done, but always honor specific user requests."},
             {"role": "user", "content": prompt}
         ],
         temperature=CONFIG['temperature'],
@@ -480,10 +469,10 @@ def chat():
         
         assistant_response = response.choices[0].message.content.strip()
         
-        # Detect if this response contains an actual idea (heuristic: longer response mentioning design elements)
+        # Detect if this response contains an actual idea (look for "Here is an idea:" prefix)
         try:
-            is_idea = len(assistant_response.split()) > 15 and any(word in assistant_response.lower() for word in ['table', 'design', 'feature', 'dining', 'modular', 'wood', 'metal', 'glass'])
-            app.logger.info(f"Idea detection: {is_idea} (length: {len(assistant_response.split())})")
+            is_idea = assistant_response.strip().startswith("Here is an idea:")
+            app.logger.info(f"Idea detection: {is_idea} (starts with 'Here is an idea:': {assistant_response.strip().startswith('Here is an idea:')})")
         except Exception as e:
             app.logger.error(f"Error in idea detection: {e}")
             is_idea = False
