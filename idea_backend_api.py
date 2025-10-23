@@ -14,7 +14,7 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import json
 import time
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 import hashlib
 from datetime import datetime
 import os
@@ -23,6 +23,10 @@ from openai import OpenAI
 import threading
 from collections import Counter
 import re
+import numpy as np
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.cluster import KMeans
+from scipy.spatial.distance import cosine, pdist
 
 load_dotenv()
 
@@ -78,14 +82,26 @@ def generate_idea_baseline(topic: str) -> str:
     )
     return response.choices[0].message.content.strip()
 
-def generate_idea_with_memory(topic: str, memory_context: str) -> str:
-    """Condition 2: Uses shared memory summary"""
-    prompt = f"""Generate a creative solution for {topic}.
+def generate_idea_with_memory(topic: str, memory_context: str, all_ideas: List[str]) -> str:
+    """Condition 2: Shows semantic themes but NO explicit avoidance instruction"""
+    # Extract text from idea objects
+    idea_texts = [item['text'] if isinstance(item, dict) else item for item in all_ideas]
+    
+    # Extract semantic themes (same as condition 3)
+    semantic_themes, _ = extract_semantic_themes(idea_texts, n_clusters=5)
+    
+    # Format semantic themes
+    if semantic_themes:
+        themes_text = "\n".join([f"- {theme}" for theme in semantic_themes])
+        semantic_info = f"\n\nCommon idea patterns from other participants:\n{themes_text}"
+    else:
+        semantic_info = ""
+    
+    # Show the same information as condition 3, but WITHOUT avoidance instruction
+    prompt = f"""Generate a creative solution for {topic}. Be specific and concrete.
 
 Previous explorations by other participants:
-{memory_context}
-
-Provide a novel approach that explores different territory from what's been covered. Be specific and concrete."""
+{memory_context}{semantic_info}"""
 
     response = openai_client.chat.completions.create(
         model=CONFIG['model_name'],
@@ -100,35 +116,46 @@ Provide a novel approach that explores different territory from what's been cove
 
 def generate_idea_with_exclusion(topic: str, memory_context: str, all_ideas: List[str], 
                                 user_request: Optional[str] = None) -> str:
-    """Condition 3: Uses shared memory + exclusion, but user can override"""
-    excluded_concepts = extract_key_concepts_simple(all_ideas)
-    exclusion_text = ", ".join(excluded_concepts[:8])
+    """Condition 3: Uses semantic themes + keyword exclusion"""
+    # Extract text from idea objects
+    idea_texts = [item['text'] if isinstance(item, dict) else item for item in all_ideas]
+    
+    # Extract both semantic themes and keywords
+    semantic_themes, _ = extract_semantic_themes(idea_texts, n_clusters=5)
+    excluded_keywords = extract_key_concepts(idea_texts, max_concepts=10)
+    
+    # Format semantic themes (what IDEAS have been explored)
+    if semantic_themes:
+        themes_text = "\n".join([f"- {theme}" for theme in semantic_themes])
+        semantic_exclusion = f"\n\nCommon idea patterns already explored:\n{themes_text}"
+    else:
+        semantic_exclusion = ""
+    
+    # Format keywords (what WORDS are overused)
+    keywords_text = ", ".join(excluded_keywords[:10]) if excluded_keywords else ""
     
     if user_request:
         # User provided specific direction - honor it even if it overlaps with exclusions
         prompt = f"""Generate a creative solution for {topic}.
 
 Previous explorations by other participants:
-{memory_context}
+{memory_context}{semantic_exclusion}
 
 User's specific request:
 {user_request}
 
-Note: Other participants have explored: {exclusion_text}
-However, honor the user's request above, even if it relates to these concepts. Be specific and concrete."""
+Note: Overused keywords include: {keywords_text}
+However, honor the user's request above, even if it relates to these. Be specific and concrete."""
     else:
-        # Standard exclusion mode
-        prompt = f"""Generate a creative solution for {topic}.
+        # Standard exclusion mode with semantic awareness
+        prompt = f"""Generate a creative solution for {topic}. Be specific and concrete.
 
-Previous explorations by other participants:
-{memory_context}
+Previous explorations summary:
+{memory_context}{semantic_exclusion}
 
-IMPORTANT - You should AVOID these overused concepts (used by other participants):
-{exclusion_text}
+IMPORTANT - Avoid these overused keywords: {keywords_text}
 
-EXCEPTION: If the user specifically requests an idea related to these concepts, you should honor their request.
-
-Create something using COMPLETELY DIFFERENT concepts, materials, or approaches not listed above. Be specific and concrete."""
+More importantly, avoid generating ideas similar in MEANING to the common patterns listed above. Think of a conceptually different approach."""
 
     response = openai_client.chat.completions.create(
         model=CONFIG['model_name'],
@@ -141,21 +168,95 @@ Create something using COMPLETELY DIFFERENT concepts, materials, or approaches n
     )
     return response.choices[0].message.content.strip()
 
-def extract_key_concepts_simple(ideas: List[str]) -> List[str]:
-    """Extract overused concepts from all ideas"""
-    common_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 
-                   'for', 'of', 'with', 'by', 'from', 'as', 'is', 'was', 'are', 
-                   'were', 'be', 'been', 'being', 'have', 'has', 'had', 'do', 
-                   'does', 'did', 'will', 'would', 'could', 'should', 'table', 'dining'}
+def get_embeddings(texts: List[str]) -> np.ndarray:
+    """Get semantic embeddings for texts using OpenAI"""
+    try:
+        response = openai_client.embeddings.create(
+            model="text-embedding-3-small",
+            input=texts
+        )
+        embeddings = [item.embedding for item in response.data]
+        return np.array(embeddings)
+    except Exception as e:
+        app.logger.error(f"Error getting embeddings: {e}")
+        return np.array([])
+
+def extract_semantic_themes(ideas: List[str], n_clusters: int = 5) -> Tuple[List[str], np.ndarray]:
+    """
+    Extract semantic themes using embeddings + clustering.
+    Returns: (theme descriptions, cluster centers)
+    """
+    if len(ideas) < 2:
+        return [], np.array([])
     
-    all_words = []
-    for idea_obj in ideas:
-        idea_text = idea_obj['text'] if isinstance(idea_obj, dict) else idea_obj
-        words = re.findall(r'\b[a-z]{4,}\b', idea_text.lower())
-        all_words.extend([w for w in words if w not in common_words])
+    try:
+        # Get semantic embeddings
+        embeddings = get_embeddings(ideas)
+        if len(embeddings) == 0:
+            return [], np.array([])
+        
+        # Cluster ideas semantically
+        n_clusters = min(n_clusters, len(ideas) // 2)
+        if n_clusters < 2:
+            return [], np.array([])
+        
+        kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+        cluster_labels = kmeans.fit_predict(embeddings)
+        
+        # Get representative ideas from each cluster (closest to center)
+        cluster_themes = []
+        for i in range(n_clusters):
+            cluster_indices = np.where(cluster_labels == i)[0]
+            if len(cluster_indices) == 0:
+                continue
+            
+            cluster_embeddings = embeddings[cluster_indices]
+            center = kmeans.cluster_centers_[i]
+            
+            # Find idea closest to cluster center
+            distances = [cosine(emb, center) for emb in cluster_embeddings]
+            closest_idx = cluster_indices[np.argmin(distances)]
+            
+            # Use the representative idea (truncated for brevity)
+            representative = ideas[closest_idx][:100] + "..." if len(ideas[closest_idx]) > 100 else ideas[closest_idx]
+            cluster_themes.append(representative)
+        
+        return cluster_themes, kmeans.cluster_centers_
+        
+    except Exception as e:
+        app.logger.warning(f"Error extracting semantic themes: {e}")
+        return [], np.array([])
+
+def extract_key_concepts(ideas: List[str], max_concepts: int = 15) -> List[str]:
+    """Extract key concepts using TF-IDF for keyword-based exclusion"""
+    if len(ideas) < 2:
+        return []
     
-    most_common = Counter(all_words).most_common(15)
-    return [word for word, count in most_common if count > 2]  # Must appear 3+ times
+    try:
+        # Use TF-IDF to find important terms
+        vectorizer = TfidfVectorizer(
+            max_features=max_concepts * 2,
+            stop_words='english',
+            ngram_range=(1, 2),  # Include bigrams (e.g., "modular design")
+            min_df=1
+        )
+        tfidf_matrix = vectorizer.fit_transform(ideas)
+        feature_names = vectorizer.get_feature_names_out()
+        
+        # Get top concepts based on TF-IDF scores
+        scores = tfidf_matrix.sum(axis=0).A1
+        top_indices = scores.argsort()[-max_concepts:][::-1]
+        
+        concepts = [feature_names[i] for i in top_indices]
+        
+        # Filter out very common words that might slip through
+        filtered_concepts = [c for c in concepts if len(c.split()) > 1 or len(c) > 4]
+        
+        return filtered_concepts[:max_concepts]
+        
+    except Exception as e:
+        app.logger.warning(f"Error extracting concepts: {e}")
+        return []
 
 def generate_summary(ideas: List[str], existing_summary: Optional[str] = None) -> str:
     """Generate/update summary of ALL ideas across participants"""
@@ -213,6 +314,9 @@ def start_session():
         state = condition_states[condition]
         total_ideas = len(state['ideas'])
     
+    # Log session start with condition
+    app.logger.info(f"NEW SESSION: Participant {participant_id[:8]}... assigned to {condition.upper()} condition (total ideas in condition: {total_ideas})")
+    
     return jsonify({
         'session_id': session_id,
         'condition': condition,
@@ -245,12 +349,12 @@ def generate_idea():
         if condition == 'baseline':
             idea = generate_idea_baseline(topic)
         elif condition == 'memory':
-            if current_summary:
-                idea = generate_idea_with_memory(topic, current_summary)
+            if current_summary and len(all_ideas) >= 2:
+                idea = generate_idea_with_memory(topic, current_summary, all_ideas)
             else:
                 idea = generate_idea_baseline(topic)
         elif condition == 'exclusion':
-            if current_summary:
+            if current_summary and len(all_ideas) >= 2:
                 idea = generate_idea_with_exclusion(
                     topic, 
                     current_summary, 
@@ -273,11 +377,16 @@ def generate_idea():
             session['ideas_generated'] += 1
             
             # Update summary every batch_size ideas (across ALL participants)
+            summary_updated = False
             if condition in ['memory', 'exclusion'] and total_ideas % CONFIG['batch_size'] == 0:
                 batch_start = max(0, total_ideas - CONFIG['batch_size'])
                 batch_ideas = [item['text'] for item in state['ideas'][batch_start:]]
                 state['summary'] = generate_summary(batch_ideas, state['summary'])
                 state['last_summary_update'] = total_ideas
+                summary_updated = True
+        
+        # Log idea generation
+        app.logger.info(f"IDEA GENERATED: {condition.upper()} condition - Participant {session['participant_id'][:8]}... (#{session['ideas_generated']}, total in condition: {total_ideas}){' [SUMMARY UPDATED]' if summary_updated else ''}")
         
         return jsonify({
             'idea': idea,
@@ -316,6 +425,9 @@ def end_session():
         return jsonify({'error': 'Invalid session'}), 400
     
     session = participant_sessions[session_id]
+    
+    # Log session end
+    app.logger.info(f"SESSION ENDED: {session['condition'].upper()} - Participant {session['participant_id'][:8]}... generated {session['ideas_generated']} ideas")
     
     # Save participant data
     filename = f"participant_{session['participant_id']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
