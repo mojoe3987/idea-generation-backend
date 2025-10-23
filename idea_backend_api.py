@@ -84,7 +84,7 @@ User's request:
     response = openai_client.chat.completions.create(
         model=CONFIG['model_name'],
         messages=[
-            {"role": "system", "content": "You are a creative idea generator. Generate concise, specific ideas in 2-3 sentences."},
+            {"role": "system", "content": "You are a creative idea generator. Describe ideas directly using phrases like 'A dining table that...' or 'This design features...'. Do not use imperative verbs like 'Create', 'Design', or 'Introduce'. Keep responses to 2-3 sentences."},
             {"role": "user", "content": prompt}
         ],
         temperature=CONFIG['temperature'],
@@ -119,7 +119,7 @@ User's request:
     response = openai_client.chat.completions.create(
         model=CONFIG['model_name'],
         messages=[
-            {"role": "system", "content": "You are a creative idea generator. Generate concise, specific ideas in 2-3 sentences."},
+            {"role": "system", "content": "You are a creative idea generator. Describe ideas directly using phrases like 'A dining table that...' or 'This design features...'. Do not use imperative verbs like 'Create', 'Design', or 'Introduce'. Keep responses to 2-3 sentences."},
             {"role": "user", "content": prompt}
         ],
         temperature=CONFIG['temperature'],
@@ -173,7 +173,7 @@ More importantly, avoid generating ideas similar in MEANING to the common patter
     response = openai_client.chat.completions.create(
         model=CONFIG['model_name'],
         messages=[
-            {"role": "system", "content": "You are a creative idea generator. Generate concise, specific ideas in 2-3 sentences. You avoid repeating what others have done, but always honor specific user requests."},
+            {"role": "system", "content": "You are a creative idea generator. Describe ideas directly using phrases like 'A dining table that...' or 'This design features...'. Do not use imperative verbs like 'Create', 'Design', or 'Introduce'. Keep responses to 2-3 sentences. You avoid repeating what others have done, but always honor specific user requests."},
             {"role": "user", "content": prompt}
         ],
         temperature=CONFIG['temperature'],
@@ -395,9 +395,8 @@ def generate_idea():
             current_summary = state['summary']
             all_ideas = state['ideas']
         
-        # Validate user input (required for first idea in session)
+        # Use default if no user input (shouldn't happen with frontend validation)
         if not user_input or not user_input.strip():
-            # If no input provided, use a default request
             user_input = "Generate a creative and innovative idea"
         
         # Generate idea based on condition (all use user_request)
