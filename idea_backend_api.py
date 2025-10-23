@@ -74,6 +74,52 @@ embedding_cache = {}
 # Lock for thread-safe updates
 state_lock = threading.Lock()
 
+def build_system_prompt(condition: str, topic: str, memory_summary: Optional[str], all_ideas: List[str]) -> str:
+    """Build condition-specific system prompt for natural conversation"""
+    
+    base_prompt = f"""You are a helpful AI assistant having a natural conversation to help users brainstorm creative ideas for {topic}.
+
+- Respond naturally and conversationally
+- When the user asks for an idea or makes a request, provide ONE specific idea in 2-3 sentences
+- Describe ideas directly (e.g., "A dining table that..." or "This design features...")
+- Do not use imperative verbs like "Create", "Design", or "Introduce"
+- If the user greets you or chats, respond warmly and guide them towards idea generation"""
+    
+    if condition == 'baseline':
+        return base_prompt
+    
+    elif condition == 'memory':
+        # Add memory context invisibly
+        if memory_summary and len(all_ideas) >= 2:
+            idea_texts = [item['text'] if isinstance(item, dict) else item for item in all_ideas]
+            semantic_themes, _ = extract_semantic_themes(idea_texts, n_clusters=5)
+            
+            memory_context = f"\n\nCONTEXT (not visible to user): Other participants have explored:\n{memory_summary}"
+            if semantic_themes:
+                memory_context += "\nCommon patterns:\n" + "\n".join([f"- {theme}" for theme in semantic_themes])
+            
+            return base_prompt + memory_context
+        return base_prompt
+    
+    elif condition == 'exclusion':
+        # Add memory + exclusion context invisibly
+        if memory_summary and len(all_ideas) >= 2:
+            idea_texts = [item['text'] if isinstance(item, dict) else item for item in all_ideas]
+            semantic_themes, _ = extract_semantic_themes(idea_texts, n_clusters=5)
+            excluded_keywords = extract_key_concepts(idea_texts, max_concepts=10)
+            
+            exclusion_context = f"\n\nCONTEXT (not visible to user): Other participants have explored:\n{memory_summary}"
+            if semantic_themes:
+                exclusion_context += "\nCommon patterns:\n" + "\n".join([f"- {theme}" for theme in semantic_themes])
+            exclusion_context += f"\n\nIMPORTANT: When generating ideas, avoid these overused keywords: {', '.join(excluded_keywords[:10])}"
+            exclusion_context += "\nMore importantly, avoid ideas similar in MEANING to the patterns above."
+            exclusion_context += "\nHOWEVER: If the user specifically requests something related to these patterns, honor their request."
+            
+            return base_prompt + exclusion_context
+        return base_prompt
+    
+    return base_prompt
+
 def generate_idea_baseline(topic: str, user_request: str) -> str:
     """Condition 1: User request only, no memory"""
     prompt = f"""Generate a creative solution for {topic}. Keep it concise (2-3 sentences). Be specific and concrete.
@@ -375,12 +421,13 @@ def start_session():
         'status': 'success'
     })
 
-@app.route('/api/generate_idea', methods=['POST'])
-def generate_idea():
-    """Generate idea - adds to SHARED condition state"""
+@app.route('/api/chat', methods=['POST'])
+def chat():
+    """Natural conversation with condition-specific context injected"""
     data = request.json
     session_id = data.get('session_id')
-    user_input = data.get('user_input')  # Optional: user's specific request
+    user_message = data.get('user_message')
+    chat_history = data.get('chat_history', [])  # Full conversation history
     
     if session_id not in participant_sessions:
         return jsonify({'error': 'Invalid session'}), 400
@@ -395,63 +442,71 @@ def generate_idea():
             current_summary = state['summary']
             all_ideas = state['ideas']
         
-        # Use default if no user input (shouldn't happen with frontend validation)
-        if not user_input or not user_input.strip():
-            user_input = "Generate a creative and innovative idea"
+        # Build system prompt based on condition
+        system_prompt = build_system_prompt(condition, topic, current_summary, all_ideas)
         
-        # Generate idea based on condition (all use user_request)
-        if condition == 'baseline':
-            idea = generate_idea_baseline(topic, user_input)
-        elif condition == 'memory':
-            if current_summary and len(all_ideas) >= 2:
-                idea = generate_idea_with_memory(topic, current_summary, all_ideas, user_input)
-            else:
-                idea = generate_idea_baseline(topic, user_input)
-        elif condition == 'exclusion':
-            if current_summary and len(all_ideas) >= 2:
-                idea = generate_idea_with_exclusion(
-                    topic, 
-                    current_summary, 
-                    all_ideas,
-                    user_request=user_input
-                )
-            else:
-                idea = generate_idea_baseline(topic, user_input)
+        # Build messages with full chat history
+        messages = [{"role": "system", "content": system_prompt}]
         
-        # Add to SHARED state
-        with state_lock:
-            state['ideas'].append({
-                'text': idea,
-                'participant_id': session['participant_id'],
-                'timestamp': datetime.now().isoformat(),
-                'user_request': user_input if user_input else None
-            })
+        # Add conversation history
+        for msg in chat_history:
+            if msg['sender'] == 'You':
+                messages.append({"role": "user", "content": msg['message']})
+            elif msg['sender'] == 'Assistant':
+                messages.append({"role": "assistant", "content": msg['message']})
+        
+        # Add current user message
+        messages.append({"role": "user", "content": user_message})
+        
+        # Get response
+        response = openai_client.chat.completions.create(
+            model=CONFIG['model_name'],
+            messages=messages,
+            temperature=CONFIG['temperature'],
+            max_tokens=CONFIG['max_tokens']
+        )
+        
+        assistant_response = response.choices[0].message.content.strip()
+        
+        # Detect if this response contains an actual idea (heuristic: longer response mentioning design elements)
+        is_idea = len(assistant_response.split()) > 15 and any(word in assistant_response.lower() for word in ['table', 'design', 'feature', 'dining', 'modular', 'wood', 'metal', 'glass'])
+        
+        # If this is an actual idea, add to SHARED state
+        if is_idea:
+            with state_lock:
+                state['ideas'].append({
+                    'text': assistant_response,
+                    'participant_id': session['participant_id'],
+                    'timestamp': datetime.now().isoformat(),
+                    'user_request': user_message
+                })
+                
+                total_ideas = len(state['ideas'])
+                session['ideas_generated'] += 1
+                
+                # Update summary every batch_size ideas (across ALL participants)
+                summary_updated = False
+                if condition in ['memory', 'exclusion'] and total_ideas % CONFIG['batch_size'] == 0:
+                    batch_start = max(0, total_ideas - CONFIG['batch_size'])
+                    batch_ideas = [item['text'] for item in state['ideas'][batch_start:]]
+                    state['summary'] = generate_summary(batch_ideas, state['summary'])
+                    state['last_summary_update'] = total_ideas
+                    summary_updated = True
             
-            total_ideas = len(state['ideas'])
-            session['ideas_generated'] += 1
-            
-            # Update summary every batch_size ideas (across ALL participants)
-            summary_updated = False
-            if condition in ['memory', 'exclusion'] and total_ideas % CONFIG['batch_size'] == 0:
-                batch_start = max(0, total_ideas - CONFIG['batch_size'])
-                batch_ideas = [item['text'] for item in state['ideas'][batch_start:]]
-                state['summary'] = generate_summary(batch_ideas, state['summary'])
-                state['last_summary_update'] = total_ideas
-                summary_updated = True
-        
-        # Log idea generation
-        app.logger.info(f"IDEA GENERATED: {condition.upper()} condition - Participant {session['participant_id'][:8]}... (#{session['ideas_generated']}, total in condition: {total_ideas}){' [SUMMARY UPDATED]' if summary_updated else ''}")
+            # Log idea generation
+            app.logger.info(f"IDEA GENERATED: {condition.upper()} condition - Participant {session['participant_id'][:8]}... (#{session['ideas_generated']}, total in condition: {total_ideas}){' [SUMMARY UPDATED]' if summary_updated else ''}")
         
         return jsonify({
-            'idea': idea,
-            'participant_idea_number': session['ideas_generated'],
-            'total_ideas_in_condition': total_ideas,
+            'response': assistant_response,
+            'is_idea': is_idea,
+            'participant_idea_number': session['ideas_generated'] if is_idea else None,
+            'total_ideas_in_condition': len(state['ideas']) if is_idea else None,
             'session_id': session_id,
             'status': 'success'
         })
         
     except Exception as e:
-        app.logger.error(f"Error generating idea: {e}")
+        app.logger.error(f"Error in chat: {e}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/get_condition_stats', methods=['GET'])
