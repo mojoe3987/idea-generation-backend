@@ -40,7 +40,7 @@ openai_client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
 CONFIG = {
     'model_name': 'gpt-4o-mini',
     'temperature': 0.8,
-    'max_tokens': 800,
+    'max_tokens': 800,  # Enough for complete 2-3 sentence ideas, no cutoffs
     'batch_size': 10  # Update summary every 10 ideas across all participants
 }
 
@@ -74,19 +74,25 @@ embedding_cache = {}
 # Lock for thread-safe updates
 state_lock = threading.Lock()
 
-def generate_idea_baseline(topic: str) -> str:
-    """Condition 1: No memory"""
-    prompt = f"Generate a creative solution for {topic}. Be specific and concrete."
+def generate_idea_baseline(topic: str, user_request: str) -> str:
+    """Condition 1: User request only, no memory"""
+    prompt = f"""Generate a creative solution for {topic}. Keep it concise (2-3 sentences). Be specific and concrete.
+
+User's request:
+{user_request}"""
     
     response = openai_client.chat.completions.create(
         model=CONFIG['model_name'],
-        messages=[{"role": "user", "content": prompt}],
+        messages=[
+            {"role": "system", "content": "You are a creative idea generator. Generate concise, specific ideas in 2-3 sentences."},
+            {"role": "user", "content": prompt}
+        ],
         temperature=CONFIG['temperature'],
         max_tokens=CONFIG['max_tokens']
     )
     return response.choices[0].message.content.strip()
 
-def generate_idea_with_memory(topic: str, memory_context: str, all_ideas: List[str]) -> str:
+def generate_idea_with_memory(topic: str, memory_context: str, all_ideas: List[str], user_request: str) -> str:
     """Condition 2: Shows semantic themes but NO explicit avoidance instruction"""
     # Extract text from idea objects
     idea_texts = [item['text'] if isinstance(item, dict) else item for item in all_ideas]
@@ -102,15 +108,18 @@ def generate_idea_with_memory(topic: str, memory_context: str, all_ideas: List[s
         semantic_info = ""
     
     # Show the same information as condition 3, but WITHOUT avoidance instruction
-    prompt = f"""Generate a creative solution for {topic}. Be specific and concrete.
+    prompt = f"""Generate a creative solution for {topic}. Keep it concise (2-3 sentences). Be specific and concrete.
 
 Previous explorations by other participants:
-{memory_context}{semantic_info}"""
+{memory_context}{semantic_info}
+
+User's request:
+{user_request}"""
 
     response = openai_client.chat.completions.create(
         model=CONFIG['model_name'],
         messages=[
-            {"role": "system", "content": "You are a creative idea generator."},
+            {"role": "system", "content": "You are a creative idea generator. Generate concise, specific ideas in 2-3 sentences."},
             {"role": "user", "content": prompt}
         ],
         temperature=CONFIG['temperature'],
@@ -140,7 +149,7 @@ def generate_idea_with_exclusion(topic: str, memory_context: str, all_ideas: Lis
     
     if user_request:
         # User provided specific direction - honor it even if it overlaps with exclusions
-        prompt = f"""Generate a creative solution for {topic}.
+        prompt = f"""Generate a creative solution for {topic}. Keep it concise (2-3 sentences).
 
 Previous explorations by other participants:
 {memory_context}{semantic_exclusion}
@@ -152,7 +161,7 @@ Note: Overused keywords include: {keywords_text}
 However, honor the user's request above, even if it relates to these. Be specific and concrete."""
     else:
         # Standard exclusion mode with semantic awareness
-        prompt = f"""Generate a creative solution for {topic}. Be specific and concrete.
+        prompt = f"""Generate a creative solution for {topic}. Keep it concise (2-3 sentences). Be specific and concrete.
 
 Previous explorations summary:
 {memory_context}{semantic_exclusion}
@@ -164,7 +173,7 @@ More importantly, avoid generating ideas similar in MEANING to the common patter
     response = openai_client.chat.completions.create(
         model=CONFIG['model_name'],
         messages=[
-            {"role": "system", "content": "You are a creative idea generator. You avoid repeating what others have done, but always honor specific user requests."},
+            {"role": "system", "content": "You are a creative idea generator. Generate concise, specific ideas in 2-3 sentences. You avoid repeating what others have done, but always honor specific user requests."},
             {"role": "user", "content": prompt}
         ],
         temperature=CONFIG['temperature'],
@@ -386,14 +395,18 @@ def generate_idea():
             current_summary = state['summary']
             all_ideas = state['ideas']
         
-        # Generate idea based on condition
+        # Validate user input (required)
+        if not user_input or not user_input.strip():
+            return jsonify({'error': 'User request is required'}), 400
+        
+        # Generate idea based on condition (all use user_request)
         if condition == 'baseline':
-            idea = generate_idea_baseline(topic)
+            idea = generate_idea_baseline(topic, user_input)
         elif condition == 'memory':
             if current_summary and len(all_ideas) >= 2:
-                idea = generate_idea_with_memory(topic, current_summary, all_ideas)
+                idea = generate_idea_with_memory(topic, current_summary, all_ideas, user_input)
             else:
-                idea = generate_idea_baseline(topic)
+                idea = generate_idea_baseline(topic, user_input)
         elif condition == 'exclusion':
             if current_summary and len(all_ideas) >= 2:
                 idea = generate_idea_with_exclusion(
@@ -403,7 +416,7 @@ def generate_idea():
                     user_request=user_input
                 )
             else:
-                idea = generate_idea_baseline(topic)
+                idea = generate_idea_baseline(topic, user_input)
         
         # Add to SHARED state
         with state_lock:
