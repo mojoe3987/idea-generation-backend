@@ -521,6 +521,60 @@ def end_session():
         'status': 'success'
     })
 
+@app.route('/api/submit_idea', methods=['POST'])
+def submit_idea():
+    """Receive an idea from Qualtrics QID18 and add it to the appropriate condition"""
+    data = request.json
+    session_id = data.get('session_id')
+    idea_text = data.get('idea_text')
+    
+    if not session_id or not idea_text:
+        return jsonify({'error': 'Missing session_id or idea_text'}), 400
+    
+    if session_id not in participant_sessions:
+        return jsonify({'error': 'Invalid session'}), 400
+    
+    session = participant_sessions[session_id]
+    condition = session['condition']
+    
+    try:
+        with state_lock:
+            state = condition_states[condition]
+            state['ideas'].append({
+                'text': idea_text,
+                'participant_id': session['participant_id'],
+                'timestamp': datetime.now().isoformat(),
+                'source': 'qualtrics_qid18'
+            })
+            
+            total_ideas = len(state['ideas'])
+            
+            # Update summary every batch_size ideas (across ALL participants)
+            summary_updated = False
+            if condition in ['memory', 'exclusion'] and total_ideas % CONFIG['batch_size'] == 0:
+                try:
+                    batch_start = max(0, total_ideas - CONFIG['batch_size'])
+                    batch_ideas = [item['text'] for item in state['ideas'][batch_start:]]
+                    state['summary'] = generate_summary(batch_ideas, state['summary'])
+                    state['last_summary_update'] = total_ideas
+                    summary_updated = True
+                    app.logger.info(f"Summary updated for {condition} condition")
+                except Exception as e:
+                    app.logger.error(f"Error updating summary: {e}")
+        
+        # Log idea submission
+        app.logger.info(f"IDEA SUBMITTED: {condition.upper()} condition - Participant {session['participant_id'][:8]}... (total in condition: {total_ideas}){' [SUMMARY UPDATED]' if summary_updated else ''}")
+        
+        return jsonify({
+            'status': 'success',
+            'total_ideas_in_condition': total_ideas,
+            'summary_updated': summary_updated
+        })
+        
+    except Exception as e:
+        app.logger.error(f"Error submitting idea: {e}")
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/export_condition_data', methods=['GET'])
 def export_condition_data():
     """Export all data for a condition (for analysis)"""
