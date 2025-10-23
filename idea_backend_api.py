@@ -67,6 +67,10 @@ condition_states = {
 # Individual participant sessions (just for tracking)
 participant_sessions = {}
 
+# Embedding cache - stores computed embeddings by text hash
+# This provides identical results but much faster for repeated/similar ideas
+embedding_cache = {}
+
 # Lock for thread-safe updates
 state_lock = threading.Lock()
 
@@ -169,17 +173,54 @@ More importantly, avoid generating ideas similar in MEANING to the common patter
     return response.choices[0].message.content.strip()
 
 def get_embeddings(texts: List[str]) -> np.ndarray:
-    """Get semantic embeddings for texts using OpenAI"""
-    try:
-        response = openai_client.embeddings.create(
-            model="text-embedding-3-small",
-            input=texts
-        )
-        embeddings = [item.embedding for item in response.data]
-        return np.array(embeddings)
-    except Exception as e:
-        app.logger.error(f"Error getting embeddings: {e}")
+    """Get semantic embeddings for texts using OpenAI with caching"""
+    if not texts:
         return np.array([])
+    
+    embeddings = []
+    texts_to_fetch = []
+    indices_to_fetch = []
+    
+    # Check cache first
+    for i, text in enumerate(texts):
+        text_hash = hashlib.md5(text.encode()).hexdigest()
+        if text_hash in embedding_cache:
+            embeddings.append(embedding_cache[text_hash])
+        else:
+            embeddings.append(None)
+            texts_to_fetch.append(text)
+            indices_to_fetch.append(i)
+    
+    # Fetch uncached embeddings in batches
+    if texts_to_fetch:
+        try:
+            # Batch up to 100 texts at once (OpenAI limit is 2048)
+            batch_size = 100
+            for batch_start in range(0, len(texts_to_fetch), batch_size):
+                batch_end = min(batch_start + batch_size, len(texts_to_fetch))
+                batch = texts_to_fetch[batch_start:batch_end]
+                
+                response = openai_client.embeddings.create(
+                    model="text-embedding-3-small",
+                    input=batch
+                )
+                
+                # Cache and store the results
+                for j, item in enumerate(response.data):
+                    global_idx = batch_start + j
+                    text = texts_to_fetch[global_idx]
+                    text_hash = hashlib.md5(text.encode()).hexdigest()
+                    embedding_cache[text_hash] = item.embedding
+                    embeddings[indices_to_fetch[global_idx]] = item.embedding
+                
+            app.logger.info(f"Cached {len(texts_to_fetch)} new embeddings (cache size: {len(embedding_cache)})")
+        except Exception as e:
+            app.logger.error(f"Error getting embeddings: {e}")
+            return np.array([])
+    else:
+        app.logger.info(f"All {len(texts)} embeddings retrieved from cache")
+    
+    return np.array(embeddings)
 
 def extract_semantic_themes(ideas: List[str], n_clusters: int = 5) -> Tuple[List[str], np.ndarray]:
     """
