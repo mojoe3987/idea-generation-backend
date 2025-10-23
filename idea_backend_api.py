@@ -395,9 +395,10 @@ def generate_idea():
             current_summary = state['summary']
             all_ideas = state['ideas']
         
-        # Validate user input (required)
+        # Validate user input (required for first idea in session)
         if not user_input or not user_input.strip():
-            return jsonify({'error': 'User request is required'}), 400
+            # If no input provided, use a default request
+            user_input = "Generate a creative and innovative idea"
         
         # Generate idea based on condition (all use user_request)
         if condition == 'baseline':
