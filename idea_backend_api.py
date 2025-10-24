@@ -127,25 +127,13 @@ User's request:
     return response.choices[0].message.content.strip()
 
 def generate_idea_with_memory(topic: str, memory_context: str, all_ideas: List[str], user_request: str) -> str:
-    """Condition 2: Shows semantic themes but NO explicit avoidance instruction"""
-    # Extract text from idea objects
-    idea_texts = [item['text'] if isinstance(item, dict) else item for item in all_ideas]
+    """Condition 2: Shows summaries only - NO explicit avoidance instruction"""
+    # Simplified approach: Only use summaries, no semantic themes or clustering
     
-    # Extract semantic themes (same as condition 3)
-    semantic_themes, _ = extract_semantic_themes(idea_texts, n_clusters=5)
-    
-    # Format semantic themes
-    if semantic_themes:
-        themes_text = "\n".join([f"- {theme}" for theme in semantic_themes])
-        semantic_info = f"\n\nCommon idea patterns from other participants:\n{themes_text}"
-    else:
-        semantic_info = ""
-    
-    # Show the same information as condition 3, but WITHOUT avoidance instruction
     prompt = f"""Generate a creative solution for {topic}. Keep it concise (2-3 sentences). Be specific and concrete.
 
 Previous explorations by other participants:
-{memory_context}{semantic_info}
+{memory_context}
 
 User's request:
 {user_request}"""
@@ -163,35 +151,18 @@ User's request:
 
 def generate_idea_with_exclusion(topic: str, memory_context: str, all_ideas: List[str], 
                                 user_request: Optional[str] = None) -> str:
-    """Condition 3: Uses semantic themes + keyword exclusion"""
-    # Extract text from idea objects
-    idea_texts = [item['text'] if isinstance(item, dict) else item for item in all_ideas]
+    """Condition 3: Uses summaries + simple avoidance instruction"""
+    # Simplified approach: Only use summaries + simple avoidance, no semantic themes or keyword extraction
     
-    # Extract both semantic themes and keywords
-    semantic_themes, _ = extract_semantic_themes(idea_texts, n_clusters=5)
-    excluded_keywords = extract_key_concepts(idea_texts, max_concepts=10)
-    
-    # Format semantic themes (what IDEAS have been explored)
-    if semantic_themes:
-        themes_text = "\n".join([f"- {theme}" for theme in semantic_themes])
-        semantic_exclusion = f"\n\nCommon idea patterns already explored:\n{themes_text}"
-    else:
-        semantic_exclusion = ""
-    
-    # Format keywords (what WORDS are overused)
-    keywords_text = ", ".join(excluded_keywords[:10]) if excluded_keywords else ""
-    
-    # User always provides specific direction - honor it even if it overlaps with exclusions
     prompt = f"""Generate a creative solution for {topic}. Keep it concise (2-3 sentences).
 
 Previous explorations by other participants:
-{memory_context}{semantic_exclusion}
+{memory_context}
 
 User's specific request:
 {user_request}
 
-Note: Overused keywords include: {keywords_text}
-However, honor the user's request above, even if it relates to these. Be specific and concrete."""
+IMPORTANT: Avoid repeating the approaches and ideas mentioned in the previous explorations above. Be specific and concrete in your idea."""
 
     response = openai_client.chat.completions.create(
         model=CONFIG['model_name'],
@@ -204,140 +175,143 @@ However, honor the user's request above, even if it relates to these. Be specifi
     )
     return response.choices[0].message.content.strip()
 
-def get_embeddings(texts: List[str]) -> np.ndarray:
-    """Get semantic embeddings for texts using OpenAI with caching"""
-    if not texts:
-        return np.array([])
-    
-    embeddings = []
-    texts_to_fetch = []
-    indices_to_fetch = []
-    
-    # Check cache first
-    for i, text in enumerate(texts):
-        text_hash = hashlib.md5(text.encode()).hexdigest()
-        if text_hash in embedding_cache:
-            embeddings.append(embedding_cache[text_hash])
-        else:
-            embeddings.append(None)
-            texts_to_fetch.append(text)
-            indices_to_fetch.append(i)
-    
-    # Fetch uncached embeddings in batches
-    if texts_to_fetch:
-        try:
-            # Batch up to 100 texts at once (OpenAI limit is 2048)
-            batch_size = 100
-            for batch_start in range(0, len(texts_to_fetch), batch_size):
-                batch_end = min(batch_start + batch_size, len(texts_to_fetch))
-                batch = texts_to_fetch[batch_start:batch_end]
-                
-                response = openai_client.embeddings.create(
-                    model="text-embedding-3-small",
-                    input=batch
-                )
-                
-                # Cache and store the results
-                for j, item in enumerate(response.data):
-                    global_idx = batch_start + j
-                    text = texts_to_fetch[global_idx]
-                    text_hash = hashlib.md5(text.encode()).hexdigest()
-                    embedding_cache[text_hash] = item.embedding
-                    embeddings[indices_to_fetch[global_idx]] = item.embedding
-                
-                # Limit cache size to prevent memory issues
-                if len(embedding_cache) > MAX_CACHE_SIZE:
-                    # Remove oldest entries (simple FIFO)
-                    keys_to_remove = list(embedding_cache.keys())[:len(embedding_cache) - MAX_CACHE_SIZE + 100]
-                    for key in keys_to_remove:
-                        del embedding_cache[key]
-                    app.logger.info(f"Cache size limited to {MAX_CACHE_SIZE}, removed {len(keys_to_remove)} entries")
-                
-            app.logger.info(f"Cached {len(texts_to_fetch)} new embeddings (cache size: {len(embedding_cache)})")
-        except Exception as e:
-            app.logger.error(f"Error getting embeddings: {e}")
-            return np.array([])
-    else:
-        app.logger.info(f"All {len(texts)} embeddings retrieved from cache")
-    
-    return np.array(embeddings)
+# UNUSED IN SIMPLIFIED APPROACH - Commented out to reduce complexity
+# def get_embeddings(texts: List[str]) -> np.ndarray:
+#     """Get semantic embeddings for texts using OpenAI with caching"""
+#     if not texts:
+#         return np.array([])
+#     
+#     embeddings = []
+#     texts_to_fetch = []
+#     indices_to_fetch = []
+#     
+#     # Check cache first
+#     for i, text in enumerate(texts):
+#         text_hash = hashlib.md5(text.encode()).hexdigest()
+#         if text_hash in embedding_cache:
+#             embeddings.append(embedding_cache[text_hash])
+#         else:
+#             embeddings.append(None)
+#             texts_to_fetch.append(text)
+#             indices_to_fetch.append(i)
+#     
+#     # Fetch uncached embeddings in batches
+#     if texts_to_fetch:
+#         try:
+#             # Batch up to 100 texts at once (OpenAI limit is 2048)
+#             batch_size = 100
+#             for batch_start in range(0, len(texts_to_fetch), batch_size):
+#                 batch_end = min(batch_start + batch_size, len(texts_to_fetch))
+#                 batch = texts_to_fetch[batch_start:batch_end]
+#                 
+#                 response = openai_client.embeddings.create(
+#                     model="text-embedding-3-small",
+#                     input=batch
+#                 )
+#                 
+#                 # Cache and store the results
+#                 for j, item in enumerate(response.data):
+#                     global_idx = batch_start + j
+#                     text = texts_to_fetch[global_idx]
+#                     text_hash = hashlib.md5(text.encode()).hexdigest()
+#                     embedding_cache[text_hash] = item.embedding
+#                     embeddings[indices_to_fetch[global_idx]] = item.embedding
+#                 
+#                 # Limit cache size to prevent memory issues
+#                 if len(embedding_cache) > MAX_CACHE_SIZE:
+#                     # Remove oldest entries (simple FIFO)
+#                     keys_to_remove = list(embedding_cache.keys())[:len(embedding_cache) - MAX_CACHE_SIZE + 100]
+#                     for key in keys_to_remove:
+#                         del embedding_cache[key]
+#                     app.logger.info(f"Cache size limited to {MAX_CACHE_SIZE}, removed {len(keys_to_remove)} entries")
+#                 
+#             app.logger.info(f"Cached {len(texts_to_fetch)} new embeddings (cache size: {len(embedding_cache)})")
+#         except Exception as e:
+#             app.logger.error(f"Error getting embeddings: {e}")
+#             return np.array([])
+#     else:
+#         app.logger.info(f"All {len(texts)} embeddings retrieved from cache")
+#     
+#     return np.array(embeddings)
 
-def extract_semantic_themes(ideas: List[str], n_clusters: int = 5) -> Tuple[List[str], np.ndarray]:
-    """
-    Extract semantic themes using embeddings + clustering.
-    Returns: (theme descriptions, cluster centers)
-    """
-    if len(ideas) < 2:
-        return [], np.array([])
-    
-    try:
-        # Get semantic embeddings
-        embeddings = get_embeddings(ideas)
-        if len(embeddings) == 0:
-            return [], np.array([])
-        
-        # Cluster ideas semantically
-        n_clusters = min(n_clusters, len(ideas) // 2)
-        if n_clusters < 2:
-            return [], np.array([])
-        
-        kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
-        cluster_labels = kmeans.fit_predict(embeddings)
-        
-        # Get representative ideas from each cluster (closest to center)
-        cluster_themes = []
-        for i in range(n_clusters):
-            cluster_indices = np.where(cluster_labels == i)[0]
-            if len(cluster_indices) == 0:
-                continue
-            
-            cluster_embeddings = embeddings[cluster_indices]
-            center = kmeans.cluster_centers_[i]
-            
-            # Find idea closest to cluster center
-            distances = [cosine(emb, center) for emb in cluster_embeddings]
-            closest_idx = cluster_indices[np.argmin(distances)]
-            
-            # Use the representative idea (truncated for brevity)
-            representative = ideas[closest_idx][:100] + "..." if len(ideas[closest_idx]) > 100 else ideas[closest_idx]
-            cluster_themes.append(representative)
-        
-        return cluster_themes, kmeans.cluster_centers_
-        
-    except Exception as e:
-        app.logger.warning(f"Error extracting semantic themes: {e}")
-        return [], np.array([])
+# UNUSED IN SIMPLIFIED APPROACH - Commented out to reduce complexity
+# def extract_semantic_themes(ideas: List[str], n_clusters: int = 5) -> Tuple[List[str], np.ndarray]:
+#     """
+#     Extract semantic themes using embeddings + clustering.
+#     Returns: (theme descriptions, cluster centers)
+#     """
+#     if len(ideas) < 2:
+#         return [], np.array([])
+#     
+#     try:
+#         # Get semantic embeddings
+#         embeddings = get_embeddings(ideas)
+#         if len(embeddings) == 0:
+#             return [], np.array([])
+#         
+#         # Cluster ideas semantically
+#         n_clusters = min(n_clusters, len(ideas) // 2)
+#         if n_clusters < 2:
+#             return [], np.array([])
+#         
+#         kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+#         cluster_labels = kmeans.fit_predict(embeddings)
+#         
+#         # Get representative ideas from each cluster (closest to center)
+#         cluster_themes = []
+#         for i in range(n_clusters):
+#             cluster_indices = np.where(cluster_labels == i)[0]
+#             if len(cluster_indices) == 0:
+#                 continue
+#             
+#             cluster_embeddings = embeddings[cluster_indices]
+#             center = kmeans.cluster_centers_[i]
+#             
+#             # Find idea closest to cluster center
+#             distances = [cosine(emb, center) for emb in cluster_embeddings]
+#             closest_idx = cluster_indices[np.argmin(distances)]
+#             
+#             # Use the representative idea (truncated for brevity)
+#             representative = ideas[closest_idx][:100] + "..." if len(ideas[closest_idx]) > 100 else ideas[closest_idx]
+#             cluster_themes.append(representative)
+#         
+#         return cluster_themes, kmeans.cluster_centers_
+#         
+#     except Exception as e:
+#         app.logger.warning(f"Error extracting semantic themes: {e}")
+#         return [], np.array([])
 
-def extract_key_concepts(ideas: List[str], max_concepts: int = 15) -> List[str]:
-    """Extract key concepts using TF-IDF for keyword-based exclusion"""
-    if len(ideas) < 2:
-        return []
-    
-    try:
-        # Use TF-IDF to find important terms
-        vectorizer = TfidfVectorizer(
-            max_features=max_concepts * 2,
-            stop_words='english',
-            ngram_range=(1, 2),  # Include bigrams (e.g., "modular design")
-            min_df=1
-        )
-        tfidf_matrix = vectorizer.fit_transform(ideas)
-        feature_names = vectorizer.get_feature_names_out()
-        
-        # Get top concepts based on TF-IDF scores
-        scores = tfidf_matrix.sum(axis=0).A1
-        top_indices = scores.argsort()[-max_concepts:][::-1]
-        
-        concepts = [feature_names[i] for i in top_indices]
-        
-        # Filter out very common words that might slip through
-        filtered_concepts = [c for c in concepts if len(c.split()) > 1 or len(c) > 4]
-        
-        return filtered_concepts[:max_concepts]
-        
-    except Exception as e:
-        app.logger.warning(f"Error extracting concepts: {e}")
-        return []
+# UNUSED IN SIMPLIFIED APPROACH - Commented out to reduce complexity
+# def extract_key_concepts(ideas: List[str], max_concepts: int = 15) -> List[str]:
+#     """Extract key concepts using TF-IDF for keyword-based exclusion"""
+#     if len(ideas) < 2:
+#         return []
+#     
+#     try:
+#         # Use TF-IDF to find important terms
+#         vectorizer = TfidfVectorizer(
+#             max_features=max_concepts * 2,
+#             stop_words='english',
+#             ngram_range=(1, 2),  # Include bigrams (e.g., "modular design")
+#             min_df=1
+#         )
+#         tfidf_matrix = vectorizer.fit_transform(ideas)
+#         feature_names = vectorizer.get_feature_names_out()
+#         
+#         # Get top concepts based on TF-IDF scores
+#         scores = tfidf_matrix.sum(axis=0).A1
+#         top_indices = scores.argsort()[-max_concepts:][::-1]
+#         
+#         concepts = [feature_names[i] for i in top_indices]
+#         
+#         # Filter out very common words that might slip through
+#         filtered_concepts = [c for c in concepts if len(c.split()) > 1 or len(c) > 4]
+#         
+#         return filtered_concepts[:max_concepts]
+#         
+#     except Exception as e:
+#         app.logger.warning(f"Error extracting concepts: {e}")
+#         return []
 
 def generate_summary(ideas: List[str], existing_summary: Optional[str] = None) -> str:
     """Generate/update summary of ALL ideas across participants"""
