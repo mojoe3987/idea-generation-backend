@@ -23,6 +23,7 @@ from openai import OpenAI
 import threading
 from collections import Counter
 import re
+import requests
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.cluster import KMeans
@@ -43,6 +44,13 @@ CONFIG = {
     'max_tokens': 800,  # Enough for complete 2-3 sentence ideas, no cutoffs
     'batch_size': 10  # Update summary every 10 ideas across all participants
 }
+
+GOOGLE_SEARCH_KEY = os.getenv('GOOGLE_SEARCH_KEY')
+GOOGLE_SEARCH_ENGINE_ID = (
+    os.getenv('GOOGLE_SEARCH_ENGINE_ID')
+    or os.getenv('GOOGLE_CSE_ID')
+    or os.getenv('GOOGLE_CUSTOM_SEARCH_ID')
+)
 
 # GLOBAL SHARED STATE - separate for each condition
 # This accumulates across ALL participants
@@ -343,6 +351,41 @@ Summary:"""
     )
     return response.choices[0].message.content.strip()
 
+
+def perform_google_search(query: str, num_results: int = 8) -> List[Dict[str, str]]:
+    """Call Google Programmable Search API and return simplified results."""
+    if not GOOGLE_SEARCH_KEY or not GOOGLE_SEARCH_ENGINE_ID:
+        raise RuntimeError("Google Search API is not configured")
+    
+    params = {
+        'key': GOOGLE_SEARCH_KEY,
+        'cx': GOOGLE_SEARCH_ENGINE_ID,
+        'q': query,
+        'num': max(1, min(int(num_results or 8), 10)),
+        'safe': 'off'
+    }
+    
+    response = requests.get(
+        'https://www.googleapis.com/customsearch/v1',
+        params=params,
+        timeout=10
+    )
+    response.raise_for_status()
+    payload = response.json()
+    items = payload.get('items', [])
+    
+    results = []
+    for item in items:
+        results.append({
+            'title': item.get('title'),
+            'snippet': item.get('snippet'),
+            'link': item.get('link'),
+            'display_link': item.get('displayLink'),
+            'formatted_url': item.get('formattedUrl')
+        })
+    
+    return results
+
 @app.route('/api/start_session', methods=['POST'])
 def start_session():
     """Initialize participant session"""
@@ -441,6 +484,37 @@ def chat():
     except Exception as e:
         app.logger.error(f"Error in chat: {e}")
         return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/google_search', methods=['POST'])
+def google_search_proxy():
+    """Proxy endpoint to fetch Google Search results via backend."""
+    data = request.json or {}
+    query = (data.get('query') or '').strip()
+    num_results = data.get('num_results', 8)
+    
+    if not query:
+        return jsonify({'error': 'Missing query'}), 400
+    
+    try:
+        results = perform_google_search(query, num_results)
+        return jsonify({
+            'status': 'success',
+            'results': results,
+            'query': query
+        })
+    except requests.HTTPError as http_err:
+        app.logger.error(f"Google Search API HTTP error: {http_err}")
+        return jsonify({'error': 'Google Search API error'}), 502
+    except requests.RequestException as req_err:
+        app.logger.error(f"Google Search API request error: {req_err}")
+        return jsonify({'error': 'Unable to reach Google Search API'}), 502
+    except RuntimeError as config_err:
+        app.logger.error(str(config_err))
+        return jsonify({'error': 'Google Search is not configured on the server'}), 500
+    except Exception as e:
+        app.logger.error(f"Unexpected Google Search error: {e}")
+        return jsonify({'error': 'Failed to fetch search results'}), 500
 
 @app.route('/api/get_condition_stats', methods=['GET'])
 def get_condition_stats():
