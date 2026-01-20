@@ -333,11 +333,21 @@ def generate_summary(ideas: List[str], existing_summary: Optional[str] = None) -
     responsible for concatenating batch summaries. This keeps early
     batch content intact and prevents it from being overwritten.
     """
-    prompt = f"""Summarize these ideas in 2-3 sentences, focusing ONLY on the main themes and approaches in this batch:
+    prompt = f"""You will see a small batch of ideas for innovative dining table designs.
+Group them into DISTINCT thematic approaches and describe each theme briefly.
 
+Instructions:
+- Identify EACH clearly different theme as a separate bullet point.
+- Within a theme, note if there are multiple VERY similar or duplicate ideas.
+- Keep each bullet to 1 short sentence.
+- Do NOT merge obviously different themes into one.
+- Focus on what makes each theme conceptually different (e.g., cooling, storage, herb garden, lighting, modularity).
+
+Ideas:
 {chr(10).join([f"{i+1}. {idea}" for i, idea in enumerate(ideas)])}
 
-Batch summary:"""
+Write the result as 2–6 bullet points, like:
+- Theme label: short description (note on duplicates if applicable)"""
     
     response = openai_client.chat.completions.create(
         model=CONFIG['model_name'],
