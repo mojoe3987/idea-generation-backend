@@ -583,6 +583,10 @@ def submit_idea():
             })
             
             total_ideas = len(state['ideas'])
+
+            # Batch number for summary cadence / tracking
+            # batch 1 = ideas 1..batch_size, batch 2 = ideas (batch_size+1)..(2*batch_size), etc.
+            batch_number = ((total_ideas - 1) // CONFIG['batch_size']) + 1
             
             # Update summary every batch_size ideas (across ALL participants)
             summary_updated = False
@@ -598,11 +602,12 @@ def submit_idea():
                     app.logger.error(f"Error updating summary: {e}")
         
         # Log idea submission
-        app.logger.info(f"IDEA SUBMITTED: {condition.upper()} condition - Participant {session['participant_id'][:8]}... (total in condition: {total_ideas}){' [SUMMARY UPDATED]' if summary_updated else ''}")
+        app.logger.info(f"IDEA SUBMITTED: {condition.upper()} condition - Participant {session['participant_id'][:8]}... (total in condition: {total_ideas}, batch: {batch_number}){' [SUMMARY UPDATED]' if summary_updated else ''}")
         
         return jsonify({
             'status': 'success',
             'total_ideas_in_condition': total_ideas,
+            'batch_number': batch_number,
             'summary_updated': summary_updated
         })
         
