@@ -424,6 +424,7 @@ def start_session():
         'condition': condition,
         'topic': topic,
         'summary_version_at_start': current_summary_version,
+        'frozen_summary': current_summary or "",
         'total_ideas_in_condition': total_ideas,
         'status': 'success'
     })
