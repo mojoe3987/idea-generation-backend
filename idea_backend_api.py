@@ -42,7 +42,7 @@ CONFIG = {
     'model_name': 'gpt-4o-mini',
     'temperature': 0.8,
     'max_tokens': 800,  # Enough for complete 2-3 sentence ideas, no cutoffs
-    'batch_size': 10  # Update summary every 10 ideas across all participants
+    'batch_size': 5  # Update summary every 5 ideas across all participants
 }
 
 GOOGLE_SEARCH_KEY = os.getenv('GOOGLE_SEARCH_KEY')
@@ -57,18 +57,21 @@ GOOGLE_SEARCH_ENGINE_ID = (
 condition_states = {
     'baseline': {
         'ideas': [],
-        'summary': None,
-        'last_summary_update': 0
+        'summary': None,           # concatenated batch summaries (if ever used)
+        'last_summary_update': 0,
+        'summary_version': 0       # how many batch summaries have been created
     },
     'memory': {
         'ideas': [],
-        'summary': None,
-        'last_summary_update': 0
+        'summary': None,           # concatenated batch summaries
+        'last_summary_update': 0,
+        'summary_version': 0       # increments each time a new batch summary is appended
     },
     'exclusion': {
         'ideas': [],
-        'summary': None,
-        'last_summary_update': 0
+        'summary': None,           # concatenated batch summaries
+        'last_summary_update': 0,
+        'summary_version': 0       # increments each time a new batch summary is appended
     }
 }
 
@@ -322,23 +325,19 @@ IMPORTANT: Avoid repeating the approaches and ideas mentioned in the previous ex
 #         return []
 
 def generate_summary(ideas: List[str], existing_summary: Optional[str] = None) -> str:
-    """Generate/update summary of ALL ideas across participants"""
-    if existing_summary:
-        prompt = f"""Update this summary with new ideas from participants (keep concise, max 12 sentences):
+    """
+    Generate a concise summary for a SINGLE batch of ideas.
 
-Existing summary:
-{existing_summary}
-
-New ideas:
-{chr(10).join([f"{i+1}. {idea}" for i, idea in enumerate(ideas)])}
-
-Updated summary:"""
-    else:
-        prompt = f"""Summarize these ideas in 3-4 sentences, focusing on main themes and approaches:
+    We intentionally do NOT update/merge with existing_summary here.
+    Instead, each batch gets its own short summary, and the caller is
+    responsible for concatenating batch summaries. This keeps early
+    batch content intact and prevents it from being overwritten.
+    """
+    prompt = f"""Summarize these ideas in 2-3 sentences, focusing ONLY on the main themes and approaches in this batch:
 
 {chr(10).join([f"{i+1}. {idea}" for i, idea in enumerate(ideas)])}
 
-Summary:"""
+Batch summary:"""
     
     response = openai_client.chat.completions.create(
         model=CONFIG['model_name'],
@@ -399,17 +398,23 @@ def start_session():
     
     session_id = hashlib.md5(f"{participant_id}_{datetime.now().isoformat()}".encode()).hexdigest()
     
+    # Get current state of their condition (for frozen summary snapshot)
+    with state_lock:
+        state = condition_states[condition]
+        total_ideas = len(state['ideas'])
+        current_summary = state['summary']
+        current_summary_version = state.get('summary_version', 0)
+
+    # Store participant session with a frozen snapshot of the current summary state
     participant_sessions[session_id] = {
         'participant_id': participant_id,
         'condition': condition,
         'topic': topic,
-        'created_at': datetime.now().isoformat()
+        'created_at': datetime.now().isoformat(),
+        # Frozen view of the summary for this participant's entire session
+        'frozen_summary': current_summary,
+        'summary_version_at_start': current_summary_version
     }
-    
-    # Get current state of their condition
-    with state_lock:
-        state = condition_states[condition]
-        total_ideas = len(state['ideas'])
     
     # Log session start with condition
     app.logger.info(f"NEW SESSION: Participant {participant_id[:8]}... assigned to {condition.upper()} condition (total ideas in condition: {total_ideas})")
@@ -418,6 +423,7 @@ def start_session():
         'session_id': session_id,
         'condition': condition,
         'topic': topic,
+        'summary_version_at_start': current_summary_version,
         'total_ideas_in_condition': total_ideas,
         'status': 'success'
     })
@@ -443,11 +449,13 @@ def chat():
     try:
         with state_lock:
             state = condition_states[condition]
-            current_summary = state['summary']
             all_ideas = state['ideas']
+
+        # Use the participant's frozen summary snapshot for the whole session
+        frozen_summary = session.get('frozen_summary')
         
-        # Build system prompt based on condition
-        system_prompt = build_system_prompt(condition, topic, current_summary, all_ideas)
+        # Build system prompt based on condition, using frozen summary snapshot
+        system_prompt = build_system_prompt(condition, topic, frozen_summary, all_ideas)
         
         # Build messages with full chat history
         messages = [{"role": "system", "content": system_prompt}]
@@ -594,7 +602,18 @@ def submit_idea():
                 try:
                     batch_start = max(0, total_ideas - CONFIG['batch_size'])
                     batch_ideas = [item['text'] for item in state['ideas'][batch_start:]]
-                    state['summary'] = generate_summary(batch_ideas, state['summary'])
+
+                    # Generate a summary ONLY for this batch, then append to existing summaries.
+                    batch_summary = generate_summary(batch_ideas)
+                    if state['summary']:
+                        # Keep previous batch summaries intact and add the new one.
+                        state['summary'] = state['summary'] + "\n\n" + batch_summary
+                    else:
+                        state['summary'] = batch_summary
+
+                    # Each time we append a batch summary, increment summary_version
+                    state['summary_version'] = state.get('summary_version', 0) + 1
+
                     state['last_summary_update'] = total_ideas
                     summary_updated = True
                     app.logger.info(f"Summary updated for {condition} condition")
@@ -652,7 +671,8 @@ def reset_all_data():
                 condition_states[condition] = {
                     'ideas': [],
                     'summary': None,
-                    'last_summary_update': 0
+                    'last_summary_update': 0,
+                    'summary_version': 0
                 }
             
             # Clear participant sessions
