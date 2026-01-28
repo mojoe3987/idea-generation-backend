@@ -42,7 +42,7 @@ CONFIG = {
     'model_name': 'gpt-4o-mini',
     'temperature': 0.8,
     'max_tokens': 800,  # Enough for complete 2-3 sentence ideas, no cutoffs
-    'batch_size': 5  # Update summary every 5 ideas across all participants
+    'batch_size': 5  # Update summary every 5 participants across all participants
 }
 
 GOOGLE_SEARCH_KEY = os.getenv('GOOGLE_SEARCH_KEY')
@@ -59,19 +59,22 @@ condition_states = {
         'ideas': [],
         'summary': None,           # concatenated batch summaries (if ever used)
         'last_summary_update': 0,
-        'summary_version': 0       # how many batch summaries have been created
+        'summary_version': 0,     # how many batch summaries have been created
+        'participants_with_ideas': set()  # Track unique participants who submitted ideas
     },
     'memory': {
         'ideas': [],
         'summary': None,           # concatenated batch summaries
         'last_summary_update': 0,
-        'summary_version': 0       # increments each time a new batch summary is appended
+        'summary_version': 0,     # increments each time a new batch summary is appended
+        'participants_with_ideas': set()  # Track unique participants who submitted ideas
     },
     'exclusion': {
         'ideas': [],
         'summary': None,           # concatenated batch summaries
         'last_summary_update': 0,
-        'summary_version': 0       # increments each time a new batch summary is appended
+        'summary_version': 0,     # increments each time a new batch summary is appended
+        'participants_with_ideas': set()  # Track unique participants who submitted ideas
     }
 }
 
@@ -542,6 +545,7 @@ def get_condition_stats():
         stats = {
             condition: {
                 'total_ideas': len(state['ideas']),
+                'participant_count': len(state['participants_with_ideas']),
                 'has_summary': state['summary'] is not None,
                 'last_summary_update': state['last_summary_update']
             }
@@ -590,29 +594,43 @@ def submit_idea():
     
     session = participant_sessions[session_id]
     condition = session['condition']
+    participant_id = session['participant_id']
     
     try:
         with state_lock:
             state = condition_states[condition]
+            
+            # Add participant to set (each participant submits only one idea)
+            state['participants_with_ideas'].add(participant_id)
+            
             state['ideas'].append({
                 'text': idea_text,
-                'participant_id': session['participant_id'],
+                'participant_id': participant_id,
                 'timestamp': datetime.now().isoformat(),
                 'source': 'qualtrics_qid18'
             })
             
             total_ideas = len(state['ideas'])
+            participant_count = len(state['participants_with_ideas'])
 
-            # Batch number for summary cadence / tracking
-            # batch 1 = ideas 1..batch_size, batch 2 = ideas (batch_size+1)..(2*batch_size), etc.
-            batch_number = ((total_ideas - 1) // CONFIG['batch_size']) + 1
+            # Batch number based on participant count (every 5 participants)
+            # batch 1 = participants 1..5, batch 2 = participants 6..10, etc.
+            batch_number = ((participant_count - 1) // CONFIG['batch_size']) + 1
             
-            # Update summary every batch_size ideas (across ALL participants)
+            # Update summary every batch_size participants (across ALL participants)
+            # Only update when we reach a new batch milestone (participant_count is a multiple of batch_size)
+            # and we haven't already updated for this participant count
             summary_updated = False
-            if condition in ['memory', 'exclusion'] and total_ideas % CONFIG['batch_size'] == 0:
+            if condition in ['memory', 'exclusion'] and participant_count % CONFIG['batch_size'] == 0 and state.get('last_summary_update', 0) < participant_count:
                 try:
-                    batch_start = max(0, total_ideas - CONFIG['batch_size'])
-                    batch_ideas = [item['text'] for item in state['ideas'][batch_start:]]
+                    # Get ideas from the last batch_size participants
+                    # Find participant IDs in the current batch
+                    all_participant_ids = list(state['participants_with_ideas'])
+                    batch_participant_ids = set(all_participant_ids[-CONFIG['batch_size']:])
+                    
+                    # Get all ideas from these participants
+                    batch_ideas = [item['text'] for item in state['ideas'] 
+                                  if item['participant_id'] in batch_participant_ids]
 
                     # Generate a summary ONLY for this batch, then append to existing summaries.
                     batch_summary = generate_summary(batch_ideas)
@@ -625,18 +643,19 @@ def submit_idea():
                     # Each time we append a batch summary, increment summary_version
                     state['summary_version'] = state.get('summary_version', 0) + 1
 
-                    state['last_summary_update'] = total_ideas
+                    state['last_summary_update'] = participant_count
                     summary_updated = True
-                    app.logger.info(f"Summary updated for {condition} condition")
+                    app.logger.info(f"Summary updated for {condition} condition (participant count: {participant_count})")
                 except Exception as e:
                     app.logger.error(f"Error updating summary: {e}")
         
         # Log idea submission
-        app.logger.info(f"IDEA SUBMITTED: {condition.upper()} condition - Participant {session['participant_id'][:8]}... (total in condition: {total_ideas}, batch: {batch_number}){' [SUMMARY UPDATED]' if summary_updated else ''}")
+        app.logger.info(f"IDEA SUBMITTED: {condition.upper()} condition - Participant {participant_id[:8]}... (total ideas: {total_ideas}, participants: {participant_count}, batch: {batch_number}){' [SUMMARY UPDATED]' if summary_updated else ''}")
         
         return jsonify({
             'status': 'success',
             'total_ideas_in_condition': total_ideas,
+            'participant_count': participant_count,
             'batch_number': batch_number,
             'summary_updated': summary_updated
         })
@@ -658,8 +677,10 @@ def export_condition_data():
         data = {
             'condition': condition,
             'total_ideas': len(state['ideas']),
+            'participant_count': len(state['participants_with_ideas']),
             'ideas': state['ideas'],
             'summary': state['summary'],
+            'participants_with_ideas': list(state['participants_with_ideas']),  # Convert set to list for JSON
             'exported_at': datetime.now().isoformat()
         }
     
@@ -683,7 +704,8 @@ def reset_all_data():
                     'ideas': [],
                     'summary': None,
                     'last_summary_update': 0,
-                    'summary_version': 0
+                    'summary_version': 0,
+                    'participants_with_ideas': set()  # Reset participant tracking
                 }
             
             # Clear participant sessions
@@ -719,8 +741,18 @@ def auto_save_state():
                 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
                 filename = f"data/backups/state_backup_{timestamp}.json"
                 os.makedirs('data/backups', exist_ok=True)
+                # Convert sets to lists for JSON serialization
+                serializable_states = {}
+                for condition, state in condition_states.items():
+                    serializable_states[condition] = {
+                        'ideas': state['ideas'],
+                        'summary': state['summary'],
+                        'last_summary_update': state['last_summary_update'],
+                        'summary_version': state['summary_version'],
+                        'participants_with_ideas': list(state['participants_with_ideas'])
+                    }
                 with open(filename, 'w') as f:
-                    json.dump(condition_states, f, indent=2)
+                    json.dump(serializable_states, f, indent=2)
                 app.logger.info(f"Auto-saved state to {filename}")
     
     thread = threading.Thread(target=save, daemon=True)
