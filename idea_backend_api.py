@@ -341,7 +341,6 @@ Group them into DISTINCT thematic approaches and describe each theme briefly.
 
 Instructions:
 - Identify EACH clearly different theme as a separate bullet point.
-- Within a theme, note if there are multiple VERY similar or duplicate ideas.
 - Keep each bullet to 1 short sentence.
 - Do NOT merge obviously different themes into one.
 - Focus on what makes each theme conceptually different (e.g., cooling, storage, herb garden, lighting, modularity).
@@ -350,7 +349,7 @@ Ideas:
 {chr(10).join([f"{i+1}. {idea}" for i, idea in enumerate(ideas)])}
 
 Write the result as 2–6 bullet points, like:
-- Theme label: short description (note on duplicates if applicable)"""
+- Theme label: short description"""
     
     response = openai_client.chat.completions.create(
         model=CONFIG['model_name'],
