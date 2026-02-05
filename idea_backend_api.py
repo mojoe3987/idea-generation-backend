@@ -616,20 +616,14 @@ def submit_idea():
             # batch 1 = participants 1..5, batch 2 = participants 6..10, etc.
             batch_number = ((participant_count - 1) // CONFIG['batch_size']) + 1
             
-            # Update summary every batch_size participants (across ALL participants)
-            # Only update when we reach a new batch milestone (participant_count is a multiple of batch_size)
-            # and we haven't already updated for this participant count
+            # Update summary every batch_size SUBMITTED IDEAS (not participants)
+            # Only update when we reach a new batch milestone (total_ideas is a multiple of batch_size)
+            # and we haven't already updated for this idea count
             summary_updated = False
-            if condition in ['memory', 'exclusion'] and participant_count % CONFIG['batch_size'] == 0 and state.get('last_summary_update', 0) < participant_count:
+            if condition in ['memory', 'exclusion'] and total_ideas % CONFIG['batch_size'] == 0 and state.get('last_summary_update', 0) < total_ideas:
                 try:
-                    # Get ideas from the last batch_size participants
-                    # Find participant IDs in the current batch
-                    all_participant_ids = list(state['participants_with_ideas'])
-                    batch_participant_ids = set(all_participant_ids[-CONFIG['batch_size']:])
-                    
-                    # Get all ideas from these participants
-                    batch_ideas = [item['text'] for item in state['ideas'] 
-                                  if item['participant_id'] in batch_participant_ids]
+                    # Get the last batch_size ideas that were submitted (maintains submission order)
+                    batch_ideas = [item['text'] for item in state['ideas'][-CONFIG['batch_size']:]]
 
                     # Generate a summary ONLY for this batch, then append to existing summaries.
                     batch_summary = generate_summary(batch_ideas)
@@ -642,9 +636,9 @@ def submit_idea():
                     # Each time we append a batch summary, increment summary_version
                     state['summary_version'] = state.get('summary_version', 0) + 1
 
-                    state['last_summary_update'] = participant_count
+                    state['last_summary_update'] = total_ideas
                     summary_updated = True
-                    app.logger.info(f"Summary updated for {condition} condition (participant count: {participant_count})")
+                    app.logger.info(f"Summary updated for {condition} condition (total ideas: {total_ideas}, batch ideas: {len(batch_ideas)})")
                 except Exception as e:
                     app.logger.error(f"Error updating summary: {e}")
         
